@@ -1,0 +1,108 @@
+heat_template_version: 2013-05-23
+description: OpenShift Infrastructure Node
+parameters:
+  satellite_fqdn:
+    type: string
+    description: Fully qualified domain name for the Satellite server
+    default: satellite.example.com
+  satellite_org:
+    type: string
+    description: Satellite Organization
+    default: SATELLITE_ORG
+  satellite_key:
+    type: string
+    description: Satellite Activation Key
+    default: SATELLITE_KEY
+  hostname:
+    type: string
+    description: Node hostname
+
+
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      name: { get_param: hostname }
+      image: rhel-guest-image-7.3-35
+      flavor: ocp.node
+      key_name: ocp3
+      networks:
+      - network: control-network
+      - network: tenant-network
+      security_groups:
+      - infra-node-sg
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          template: |
+            #cloud-config
+            fqdn: $hostname
+            manage_etc_hosts: false
+            write_files:
+            - path: /tmp/foreman-userdata.sh
+              permissions: '0755'
+              content: |
+                #!/bin/bash
+                rpm -ivh http://$satellite_fqdn/pub/katello-ca-consumer-latest.noarch.rpm
+                
+                echo "Registering the System"
+                subscription-manager register --org="$satellite_org" --activationkey="$satellite_key"
+                
+                echo "Installing Katello Agent"
+                subscription-manager repos --enable=rhel-7-server-satellite-tools-6.2-rpms
+                yum -t -y -e 0 install katello-agent
+                
+                # Copy cloud-user's ssh key to root's:
+                cat ~cloud-user/.ssh/authorized_keys > /root/.ssh/authorized_keys
+            - path: /tmp/setup-repos.sh
+              permissions: '0755'
+              content: |
+                subscription-manager repos --enable=rhel-7-server-rpms --enable=rhel-7-server-extras-rpms --enable=rhel-7-server-optional-rpms --enable=rhel-7-fast-datapath-rpms --enable=rhel-7-server-ose-3.4-rpms
+                yum install wget git net-tools bind-utils iptables-services bridge-utils bash-completion kexec sos psacct -y
+                yum install wget git net-tools bind-utils iptables-services bridge-utils bash-completion kexec sos psacct -y
+            - path: /tmp/setup-docker.sh
+              permissions: '0755'
+              content: |
+                yum -y install docker
+                yum -y install docker
+                systemctl enable lvm2-lvmetad
+                systemctl start lvm2-lvmetad
+                sed -i '/OPTIONS=.*/c\OPTIONS="--selinux-enabled --insecure-registry 172.30.0.0/16"' /etc/sysconfig/docker
+                cat <<EOF > /etc/sysconfig/docker-storage-setup
+                DEVS=vdb
+                VG=docker-vg
+                EOF
+                docker-storage-setup
+                systemctl enable docker
+                systemctl start docker
+            - path: /tmp/start-eth1.sh
+              permissions: '0755'
+              content: |
+                cd /etc/sysconfig/network-scripts
+                cp ifcfg-eth0 ifcfg-eth1
+                sed -i 's+eth0+eth1+g' ifcfg-eth1
+                ifup eth1
+            runcmd:
+              - [ cloud-init-per, once, foreman-userdata, /tmp/foreman-userdata.sh ]
+              - [ cloud-init-per, once, setup-repos, /tmp/setup-repos.sh ]
+              - [ cloud-init-per, once, setup-docker, /tmp/setup-docker.sh ]
+              - [ cloud-init-per, once, start-eth1, /tmp/start-eth1.sh ]
+            output: {all: '| tee -a /root/install.userdata.log'}
+          params:
+            $hostname: { get_param: hostname }
+            $satellite_fqdn: { get_param: satellite_fqdn }
+            $satellite_org: { get_param: satellite_org }
+            $satellite_key: { get_param: satellite_key }
+
+  docker-volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: 8
+  
+  docker-volume-att:
+    type: OS::Cinder::VolumeAttachment
+    properties:
+      instance_uuid: { get_resource: server }
+      volume_id: { get_resource: docker-volume }
+      mountpoint: /dev/vdb
+

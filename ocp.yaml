@@ -1,0 +1,71 @@
+heat_template_version: 2013-05-23
+
+description: Provisions an OpenShift Environment
+
+parameters:
+  satellite_fqdn:
+    type: string
+    description: Fully qualified domain name for the Satellite server
+    default: satellite.example.com
+  satellite_org:
+    type: string
+    description: Satellite Organization
+    default: SATELLITE_ORG
+  satellite_key:
+    type: string
+    description: Satellite Activation Key
+    default: SATELLITE_KEY
+  domain:
+    type: string
+    description: OpenShift Domain
+    default: ocp3.example.com
+
+resources:
+  masters:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 3
+      resource_def:
+        type: ocp-master.yaml
+        properties:
+          satellite_fqdn: { get_param: satellite_fqdn }
+          satellite_org: { get_param: satellite_org }
+          satellite_key: { get_param: satellite_key }
+          hostname:
+            str_replace:
+              template: "master-%index%.control.%domain%"
+              params:
+                '%domain%': {get_param: domain}
+  
+  infra:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 2
+      resource_def:
+        type: ocp-infra.yaml
+        properties:
+          satellite_fqdn: { get_param: satellite_fqdn }
+          satellite_org: { get_param: satellite_org }
+          satellite_key: { get_param: satellite_key }
+          hostname:
+            str_replace:
+              template: "infra-node-%index%.control.%domain%"
+              params:
+                '%domain%': {get_param: domain}
+
+  app:
+    type: OS::Heat::ResourceGroup
+    properties:
+      count: 4
+      resource_def:
+        type: ocp-app.yaml
+        properties:
+          satellite_fqdn: { get_param: satellite_fqdn }
+          satellite_org: { get_param: satellite_org }
+          satellite_key: { get_param: satellite_key }
+          hostname:
+            str_replace:
+              template: "app-node-%index%.control.%domain%"
+              params:
+                '%domain%': {get_param: domain}
+
